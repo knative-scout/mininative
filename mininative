@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+#?
+# mininative - Start Minikube with Knative pre-setup
+#
+# USAGE
+#
+#    mininative CMD ...
+#
+# ARGUMENTS
+#
+#    CMD    Command to run, see COMMANDS section
+#
+# COMMANDS
+#
+#    Valid commands are "start".
+#
+#    See the START COMMAND section.
+#
+# START COMMAND
+#
+#    USAGE
+#
+#        mininative start [f,-d VM_DRIVER,-m MEM,-c CPUS]
+#
+#    OPTIONS
+#
+#        -f              Force create the minikube instance even if already running
+#        -d VM_DRIVER    minikube --vm-driver value, defaults to virtualbox
+#        -m MEM          Amount of memory to give minikube, defaults to 8192
+#        -c CPUS         Number of CPUs to give minikube, defaults to 6
+#
+#    BEHAVIOR
+#
+#        Start minikube configured with knative.
+#
+# DEPENDENCIES
+#
+#    minikube and kubectl binaries must be present in path.
+#
+#?
+
+# {{{1 Helpers
+function die() {
+    echo "Error: $@" >&2
+    exit 1
+}
+
+function bold() {
+    echo "$(tput bold)$@$(tput sgr0)"
+}
+
+# {{{1 Check for dependencies
+for dep in minikube kubectl; do
+    if ! which "$dep" &> /dev/null; then
+	die "dependency \"$dep\" not in PATH"
+    fi
+done
+
+# {{{1 Commands
+function cmd_start() {
+    # {{{1 Configuration
+    ENABLE_ADMISSION_PLUGINS=LimitRanger,NamespaceExists,NamespaceLifecycle,ResourceQuota,ServiceAccount,DefaultStorageClass,MutatingAdmissionWebhook
+    ISTIO_CRDS_URL=https://raw.githubusercontent.com/knative/serving/v0.5.2/third_party/istio-1.0.7/istio-crds.yaml
+    ISTIO_URL=https://raw.githubusercontent.com/knative/serving/v0.5.2/third_party/istio-1.0.7/istio.yaml
+
+    mkdir -p "$HOME/.run"
+    MINIKUBE_SIZE_FILE="$HOME/.run/mininative-minikube-size"
+
+    # {{{1 Parse options
+    minikube_force_recreate="false"
+    minikube_vm_driver=virtualbox
+    minikube_memory=8192
+    minikube_cpus=6
+    
+    while getopts "fd:m:c:" opt; do
+	case "$opt" in
+	    f) minikube_force_recreate="true" ;;
+	    d) minikube_vm_driver="$OPTARG" ;;
+	    m) minikube_memory="$OPTARG" ;;
+	    c) minikube_cpus="$OPTARG" ;;
+	    '?') die "Unknown option" ;;
+	esac
+    done
+
+    minikube_size_text="memory=$minikube_memory,cpus=$minikube_cpus"
+
+    # {{{1 Start minikube
+    # https://knative.dev/docs/install/knative-with-minikube/
+    bold "Starting Minikube"
+
+    minikube_status=$(minikube status)
+
+    # Check if minikube is already running with the size we specified
+    if [ -f "$MINIKUBE_SIZE_FILE" ] && \
+	   [[ $(cat "$MINIKUBE_SIZE_FILE") == "$minikube_size_text" ]] && \
+	    [[ "$minikube_force_recreate" == "false" ]] && \
+	    echo "$minikube_status" | grep "host: Running" && \
+	    echo "$minikube_status" | grep "kubelet: Running" && \
+	    echo "$minikube_status" | grep "apiserver: Running" && \
+	    echo "$minikube_status" | grep "kubectl: Correctly Configured"; then
+	echo "Already started"
+    else
+	# Delete any existing minikube with default name
+	minikube delete
+
+	# Start
+	if ! minikube start \
+	     --vm-driver "$minikube_vm_driver" \
+	     --memory "$minikube_memory" \
+	     --cpus "$minikube_cpus" \
+	     --extra-config apiserver.enable-admission-plugins="$ENABLE_ADMISSION_PLUGINS"; then
+	    die "Failed to start minikube"
+	fi
+
+	# Record size of minikube so we can relaunch if the user changes the size
+	if ! echo "$minikube_size_text" > "$MINIKUBE_SIZE_FILE"; then
+	    die "Failed to save size of Minikube"
+	fi
+    fi
+
+    # {{{1 Install Istio
+    bold "Installing Istio on Minikube"
+
+    kubectl apply --filename "$ISTIO_CRDS_URL" && \
+	curl -L "$ISTIO_URL" | sed 's/LoadBalancer/NodePort/' | kubectl apply --filename -
+
+    if [[ "$?" != "0" ]]; then
+	die "Failed to install Istio on Minikube"
+    fi
+
+    if ! kubectl label namespace default --overwrite istio-injection=enabled; then
+	die "Failed to enable Istio injection in default Minikube namespace"
+    fi
+
+    waiting_for_istio=true
+    
+    while [[ "$waiting_for_istio" == "true" ]]; do
+	total=0
+	done=0
+	
+	while read -r status; do
+	    if echo "$status" | grep "Running\|Completed\|Succeeded" &> /dev/null; then
+		done=$(($done + 1))
+	    fi
+
+	    total=$(($total + 1))
+	done <<< $(kubectl get pods --namespace istio-system -o custom-columns=:.status.phase | tail -n +2)
+
+	if [[ "$done" == "$total" ]]; then
+	    echo "Istio finished installing"
+	    waiting_for_istio=false
+	else
+	    echo "Waiting for Istio to finish installing ($done/$total done), this can take up to ~10 minutes..."
+	    sleep 5
+	fi
+    done
+}
+
+# {{{1 Run command
+cmd="$1"
+shift
+
+if [ -z "$cmd" ]; then
+    die "CMD argument required"
+fi
+
+case "$cmd" in
+    start) cmd_start "$@" ;;
+    *) die "Unknown command \"$cmd\"" ;;
+esac
