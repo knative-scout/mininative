@@ -16,7 +16,7 @@ Place the `mininative` file from this repository in your `PATH`.
 Assumes you have Minikube installed and setup.
 
 # Usage
-See header comment in `mininative` file for full usage instructions.  
+See header comment in [`mininative`](mininative) file for full usage instructions.  
 
 tldr:
 
