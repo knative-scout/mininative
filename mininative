@@ -20,13 +20,13 @@
 #
 #    USAGE
 #
-#        mininative start [f,-d VM_DRIVER,-m MEM,-c CPUS]
+#        mininative start [-f,-d VM_DRIVER,-m MEM,-c CPUS]
 #
 #    OPTIONS
 #
-#        -f              Force create the minikube instance even if already running
+#        -f              Force recreate the minikube instance even if already running
 #        -d VM_DRIVER    minikube --vm-driver value, defaults to virtualbox
-#        -m MEM          Amount of memory to give minikube, defaults to 8192
+#        -m MEM          Amount of memory to give minikube, defaults to 12288
 #        -c CPUS         Number of CPUs to give minikube, defaults to 6
 #
 #    BEHAVIOR
@@ -66,10 +66,19 @@ function cmd_start() {
     mkdir -p "$HOME/.run"
     MINIKUBE_SIZE_FILE="$HOME/.run/mininative-minikube-size"
 
+    KNATIVE_FILES=(
+	https://github.com/knative/serving/releases/download/v0.6.0/serving.yaml
+	https://github.com/knative/build/releases/download/v0.5.0/build.yaml
+	https://github.com/knative/eventing/releases/download/v0.5.0/release.yaml
+	https://github.com/knative/eventing-sources/releases/download/v0.5.0/eventing-sources.yaml
+	https://github.com/knative/serving/releases/download/v0.6.0/monitoring.yaml
+	https://raw.githubusercontent.com/knative/serving/v0.6.0/third_party/config/build/clusterrole.yaml
+    )
+
     # {{{1 Parse options
     minikube_force_recreate="false"
     minikube_vm_driver=virtualbox
-    minikube_memory=8192
+    minikube_memory=12288
     minikube_cpus=6
     
     while getopts "fd:m:c:" opt; do
@@ -154,6 +163,50 @@ function cmd_start() {
 	    sleep 5
 	fi
     done
+
+    # {{{1 Install Knative
+    bold "Installing Knative on Minikube"
+    
+    knative_install_args=()
+
+    for file in "${KNATIVE_FILES[@]}"; do
+	knative_install_args+=("--filename")
+	knative_install_args+=("$file")
+    done
+
+    if ! kubectl apply --selector knative.dev/crd-install=true "${knative_install_args[@]}"; then
+	die "Failed to install Knative on selected resources in Minikube"
+    fi
+
+    if ! kubectl apply "${knative_install_args[@]}"; then
+	die "Failed to install Knative on all resources in Minikube"
+    fi
+
+    waiting_for_knative=true
+    while [[ "$waiting_for_knative" == "true" ]]; do
+	total=0
+	done=0
+	
+	for namespace in knative-serving knative-build knative-eventing knative-sources knative-monitoring; do
+	    while read -r status; do
+		if echo "$status" | grep "Running" &> /dev/null; then
+		    done=$(($done + 1))
+		fi
+
+		total=$(($total + 1))
+	    done <<< $(kubectl get pods --namespace "$namespace" -o custom-columns=:.status.phase | tail -n +2)
+	done
+
+	if [[ "$done" == "$total" ]]; then
+	    echo "Knative finished installing"
+	    waiting_for_knative=false
+	else
+	    echo "Waiting for Knative to completely start ($done/$total done)..."
+	    sleep 5
+	fi
+    done
+
+    bold "Done!"
 }
 
 # {{{1 Run command
