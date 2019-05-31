@@ -28,6 +28,7 @@
 #        -d VM_DRIVER    minikube --vm-driver value, defaults to virtualbox
 #        -m MEM          Amount of memory to give minikube, defaults to 16384 (16 GB)
 #        -c CPUS         Number of CPUs to give minikube, defaults to 8
+#        -h              Show abbreviated help text
 #
 #    BEHAVIOR
 #
@@ -81,12 +82,16 @@ function cmd_start() {
     minikube_memory=16384
     minikube_cpus=8
     
-    while getopts "fd:m:c:" opt; do
+    while getopts "fd:m:c:h" opt; do
 	case "$opt" in
 	    f) minikube_force_recreate="true" ;;
 	    d) minikube_vm_driver="$OPTARG" ;;
 	    m) minikube_memory="$OPTARG" ;;
 	    c) minikube_cpus="$OPTARG" ;;
+	    h)
+		echo "$0 start [-f,-d VM_DRIVER,-m MEM,-c CPUS]"
+		exit 1
+		;;
 	    '?') die "Unknown option" ;;
 	esac
     done
@@ -223,5 +228,5 @@ fi
 
 case "$cmd" in
     start) cmd_start "$@" ;;
-    *) die "Unknown command \"$cmd\"" ;;
+    *) die "Unknown command \"$cmd\", must be one of: \"start\"" ;;
 esac
